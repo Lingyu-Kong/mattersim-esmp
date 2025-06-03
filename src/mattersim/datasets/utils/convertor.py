@@ -118,9 +118,7 @@ def get_fixed_radius_bonding(
 
     lattice_matrix = np.ascontiguousarray(structure.cell[:], dtype=float)  # noqa: E501
 
-    cart_coords = np.ascontiguousarray(
-        np.array(structure.positions), dtype=float
-    )  # noqa: E501
+    cart_coords = np.ascontiguousarray(np.array(structure.positions), dtype=float)  # noqa: E501
     r = float(cutoff)
 
     (
@@ -140,9 +138,7 @@ def get_fixed_radius_bonding(
     neighbor_indices = neighbor_indices.astype(np.int64)
     images = images.astype(np.int64)
     distances = distances.astype(float)
-    exclude_self = (center_indices != neighbor_indices) | (
-        distances > numerical_tol
-    )  # noqa: E501
+    exclude_self = (center_indices != neighbor_indices) | (distances > numerical_tol)  # noqa: E501
     return (
         center_indices[exclude_self],
         neighbor_indices[exclude_self],
@@ -218,9 +214,7 @@ class GraphConvertor:
         if self.model_type == "m3gnet":
             args["num_atoms"] = len(atoms)
             args["num_nodes"] = len(atoms)
-            args["atom_attr"] = torch.FloatTensor(
-                atoms.get_atomic_numbers()
-            ).unsqueeze(  # noqa: E501
+            args["atom_attr"] = torch.FloatTensor(atoms.get_atomic_numbers()).unsqueeze(  # noqa: E501
                 -1
             )
             args["atom_pos"] = torch.FloatTensor(atoms.get_positions())
@@ -232,9 +226,7 @@ class GraphConvertor:
                 distances,
             ) = get_fixed_radius_bonding(atoms, self.twobody_cutoff, pbc=pbc)
             args["num_bonds"] = len(sent_index)
-            args["edge_index"] = torch.from_numpy(
-                np.array([sent_index, receive_index])
-            )  # noqa: E501
+            args["edge_index"] = torch.from_numpy(np.array([sent_index, receive_index]))  # noqa: E501
             args["pbc_offsets"] = torch.FloatTensor(shift_vectors)
             if self.has_threebody:
                 (
@@ -243,17 +235,13 @@ class GraphConvertor:
                     n_triple_i,
                     n_triple_s,
                 ) = compute_threebody_indices(
-                    bond_atom_indices=args["edge_index"]
-                    .numpy()
-                    .transpose(1, 0),  # noqa: E501
+                    bond_atom_indices=args["edge_index"].numpy().transpose(1, 0),  # noqa: E501
                     bond_length=distances,
                     n_atoms=atoms.positions.shape[0],
                     atomic_number=atoms.get_atomic_numbers(),
                     threebody_cutoff=self.threebody_cutoff,
                 )
-                args["three_body_indices"] = torch.from_numpy(
-                    triple_bond_index
-                ).to(  # noqa: E501
+                args["three_body_indices"] = torch.from_numpy(triple_bond_index).to(  # noqa: E501
                     torch.long
                 )  # [num_three_body,2]
                 args["num_three_body"] = args["three_body_indices"].shape[0]

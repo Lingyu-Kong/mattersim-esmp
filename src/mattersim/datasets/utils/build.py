@@ -143,7 +143,6 @@ def multiprocess_data(atoms: list[Atoms], number):
     return result
 
 
-
 def pad_1d_unsqueeze(x, padlen):
     x = x + 1  # pad id = 0
     xlen = x.size(0)

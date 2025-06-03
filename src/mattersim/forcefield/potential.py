@@ -2,6 +2,7 @@
 """
 Potential
 """
+
 import os
 import pickle
 import random
@@ -24,6 +25,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 from torch_ema import ExponentialMovingAverage
 from torch_geometric.loader import DataLoader
 from torchmetrics import MeanMetric
+from torch_runstats.scatter import scatter
 
 from mattersim.datasets.utils.build import build_dataloader
 from mattersim.forcefield.m3gnet.m3gnet import M3Gnet
@@ -70,7 +72,9 @@ class Potential(nn.Module):
             step_size = kwargs.get("step_size", 10)
             gamma = kwargs.get("gamma", 0.95)
             self.scheduler = StepLR(
-                self.optimizer, step_size=step_size, gamma=gamma  # noqa: E501
+                self.optimizer,
+                step_size=step_size,
+                gamma=gamma,  # noqa: E501
             )
         elif scheduler == "ReduceLROnPlateau":
             factor = kwargs.get("factor", 0.8)
@@ -96,7 +100,8 @@ class Potential(nn.Module):
             self.ema = ema
         self.model_name = kwargs.get("model_name", "m3gnet")
         self.validation_metrics = kwargs.get(
-            "validation_metrics", {"loss": 10000000.0}  # noqa: E501
+            "validation_metrics",
+            {"loss": 10000000.0},  # noqa: E501
         )
         self.last_epoch = kwargs.get("last_epoch", -1)
         self.description = kwargs.get("description", "")
@@ -257,9 +262,7 @@ class Potential(nn.Module):
                     atoms_train_sampler = (
                         torch.utils.data.distributed.DistributedSampler(
                             train_data,
-                            seed=kwargs.get("seed", 42)
-                            + idx * 131
-                            + epoch,  # noqa: E501
+                            seed=kwargs.get("seed", 42) + idx * 131 + epoch,  # noqa: E501
                         )
                     )
                     train_dataloader = DataLoader(
@@ -382,9 +385,7 @@ class Potential(nn.Module):
                 if (
                     save_checkpoint is True
                     and metric[self.idx]
-                    < best_model["validation_metrics"][
-                        self.saved_name[self.idx]
-                    ]  # noqa: E501
+                    < best_model["validation_metrics"][self.saved_name[self.idx]]  # noqa: E501
                 ):
                     self.save(os.path.join(save_path, "best_model.pth"))
                 if epoch > best_model["last_epoch"] + early_stop_patience:
@@ -581,7 +582,9 @@ class Potential(nn.Module):
                 self.optimizer.zero_grad()
                 loss_.backward()
                 nn.utils.clip_grad_norm_(
-                    self.model.parameters(), 1.0, norm_type=2  # noqa: E501
+                    self.model.parameters(),
+                    1.0,
+                    norm_type=2,  # noqa: E501
                 )
                 self.optimizer.step()
                 # scaler.scale(loss_).backward()
@@ -726,6 +729,8 @@ class Potential(nn.Module):
         include_forces: bool = True,
         include_stresses: bool = True,
         dataset_idx: int = -1,
+        return_intermediate: bool = False,
+        root_indices_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         get energy, force and stress from a list of graph
@@ -745,7 +750,6 @@ class Potential(nn.Module):
             raise NotImplementedError
         else:
             strain = torch.zeros_like(input["cell"], device=self.device)
-            volume = torch.linalg.det(input["cell"])
             if include_forces is True:
                 input["atom_pos"].requires_grad_(True)
             if include_stresses is True:
@@ -764,8 +768,21 @@ class Potential(nn.Module):
                 )
                 volume = torch.linalg.det(input["cell"])
 
-            energies = self.model.forward(input, dataset_idx)
-            output["total_energy"] = energies
+            if return_intermediate:
+                energies, intermediate = self.model.forward(
+                    input, dataset_idx, return_intermediate
+                )
+                output["intermediate"] = intermediate
+            else:
+                energies, energies_i = self.model.forward(input, dataset_idx, return_intermediate, return_energies_per_atom=True)
+                if root_indices_mask is None:
+                    output["total_energy"] = energies
+                else:
+                    batch = input["batch"]
+                    num_graphs = input["num_graphs"]
+                    energies = scatter(energies_i * root_indices_mask, batch, dim=0, dim_size=num_graphs)
+                    output["total_energy"] = energies
+            output["total_energy_i"] = energies_i
 
             # Only take first derivative if only force is required
             if include_forces is True and include_stresses is False:
@@ -1205,6 +1222,8 @@ class DeepCalculator(Calculator):
                 )
 
 
+import time
+
 class MatterSimCalculator(Calculator):
     """
     Deep calculator based on ase Calculator
@@ -1237,6 +1256,9 @@ class MatterSimCalculator(Calculator):
         self.stress_weight = stress_weight
         self.args_dict = args_dict
         self.device = device
+        
+        self.prepare_time_list = []
+        self.forward_time_list = []
 
     @classmethod
     def from_checkpoint(cls, load_path: str, **kwargs):
@@ -1294,6 +1316,7 @@ class MatterSimCalculator(Calculator):
         Returns:
         """
 
+        time1 = time.time()
         all_changes = [
             "positions",
             "numbers",
@@ -1306,7 +1329,7 @@ class MatterSimCalculator(Calculator):
         properties = properties or ["energy"]
         system_changes = system_changes or all_changes
         super().calculate(
-            atoms=atoms, properties=properties, system_changes=system_changes
+            atoms=atoms
         )
 
         self.args_dict["batch_size"] = 1
@@ -1314,6 +1337,8 @@ class MatterSimCalculator(Calculator):
         dataloader = build_dataloader(
             [atoms], model_type=self.potential.model_name, **self.args_dict
         )
+        self.prepare_time_list.append(time.time() - time1)
+        time1 = time.time()
         for graph_batch in dataloader:
             # Resemble input dictionary
             if (
@@ -1346,3 +1371,4 @@ class MatterSimCalculator(Calculator):
                         result["stresses"].detach().cpu().numpy()[0]
                     )
                 )
+        self.forward_time_list.append(time.time() - time1)
